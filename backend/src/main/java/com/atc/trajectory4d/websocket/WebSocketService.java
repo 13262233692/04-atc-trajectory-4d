@@ -100,6 +100,16 @@ public class WebSocketService {
         }
     }
 
+    public void broadcastNotification(String message) {
+        String destination = appProperties.getWebsocket().getTopicPrefix() + "/notifications";
+        try {
+            messagingTemplate.convertAndSend(destination, message);
+            log.debug("Broadcasted raw notification: {}", message);
+        } catch (Exception e) {
+            log.error("Failed to broadcast raw notification", e);
+        }
+    }
+
     public void subscribeFlight(String sessionId, String flightId) {
         flightSubscribers.computeIfAbsent(flightId, k -> ConcurrentHashMap.newKeySet())
                 .add(sessionId);

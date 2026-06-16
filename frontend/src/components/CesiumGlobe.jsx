@@ -1,12 +1,16 @@
 import { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
 import * as Cesium from 'cesium';
 import { PrimitiveRenderer } from '../rendering/PrimitiveRenderer';
+import { PolygonDrawer } from '../rendering/PolygonDrawer';
+import { RestrictedAirspaceRenderer } from '../rendering/RestrictedAirspaceRenderer';
 import { format } from 'date-fns';
 
 const CesiumGlobe = forwardRef(function CesiumGlobe({ selectedFlight, renderPipeline }, ref) {
   const containerRef = useRef(null);
   const viewerRef = useRef(null);
   const rendererRef = useRef(null);
+  const drawerRef = useRef(null);
+  const airspaceRendererRef = useRef(null);
   const [currentPoint, setCurrentPoint] = useState(null);
   const [renderStats, setRenderStats] = useState({ totalFlights: 0, totalPrimitives: 0 });
 
@@ -14,6 +18,25 @@ const CesiumGlobe = forwardRef(function CesiumGlobe({ selectedFlight, renderPipe
     getCurrentPoint: () => currentPoint,
     getViewer: () => viewerRef.current,
     getRenderer: () => rendererRef.current,
+    getAirspaceRenderer: () => airspaceRendererRef.current,
+    startPolygonDrawing: (onComplete, onCancel) => {
+      if (!viewerRef.current) return;
+      if (drawerRef.current) drawerRef.current.destroy();
+      drawerRef.current = new PolygonDrawer(viewerRef.current, onComplete, onCancel);
+      drawerRef.current.start();
+    },
+    cancelPolygonDrawing: () => {
+      if (drawerRef.current) {
+        drawerRef.current.cancel();
+        drawerRef.current = null;
+      }
+    },
+    isDrawingActive: () => drawerRef.current && drawerRef.current.active,
+    renderAirspace: (airspace) => airspaceRendererRef.current?.renderAirspace(airspace),
+    removeAirspace: (id) => airspaceRendererRef.current?.removeAirspace(id),
+    renderRouteComparison: (original, detour) =>
+      airspaceRendererRef.current?.renderRouteComparison(original, detour),
+    clearRouteComparison: () => airspaceRendererRef.current?.clearRouteComparison(),
   }), [currentPoint]);
 
   const onFrameUpdate = useCallback((data) => {
@@ -84,12 +107,22 @@ const CesiumGlobe = forwardRef(function CesiumGlobe({ selectedFlight, renderPipe
     const renderer = new PrimitiveRenderer(viewer);
     rendererRef.current = renderer;
 
+    const airspaceRenderer = new RestrictedAirspaceRenderer(viewer);
+    airspaceRendererRef.current = airspaceRenderer;
+
     if (renderPipeline) {
       renderPipeline.init(viewer, onFrameUpdate, onFlightSelected, onCleared);
       renderPipeline.renderer = renderer;
     }
 
     return () => {
+      if (drawerRef.current) {
+        drawerRef.current.destroy();
+        drawerRef.current = null;
+      }
+      if (airspaceRenderer) {
+        airspaceRenderer.destroy();
+      }
       if (renderPipeline) {
         renderPipeline.destroy();
       }
@@ -101,6 +134,7 @@ const CesiumGlobe = forwardRef(function CesiumGlobe({ selectedFlight, renderPipe
       }
       viewerRef.current = null;
       rendererRef.current = null;
+      airspaceRendererRef.current = null;
     };
   }, []);
 

@@ -100,4 +100,37 @@ export const generateWeatherData = async () => {
   return api.post('/weather/generate');
 };
 
+export const fetchAllAirspaces = async () => {
+  try {
+    const response = await api.get('/airspace');
+    return response?.data || [];
+  } catch (e) {
+    console.error('Error fetching airspaces:', e);
+    return [];
+  }
+};
+
+export const createAirspace = async (payload) => {
+  const response = await api.post('/airspace', payload);
+  return response?.data;
+};
+
+export const updateAirspace = async (airspaceId, payload) => {
+  const response = await api.put(`/airspace/${airspaceId}`, payload);
+  return response?.data;
+};
+
+export const deleteAirspace = async (airspaceId) => {
+  return api.delete(`/airspace/${airspaceId}`);
+};
+
+export const triggerAirspaceAvoidance = async (airspaceId) => {
+  return api.post(`/airspace/trigger/${airspaceId}`);
+};
+
+export const rerouteFlight = async (flightId) => {
+  const response = await api.post(`/airspace/reroute/${flightId}`);
+  return response?.data;
+};
+
 export default api;

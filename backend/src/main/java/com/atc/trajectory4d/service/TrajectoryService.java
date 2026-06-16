@@ -177,4 +177,47 @@ public class TrajectoryService {
     public int getStreamPosition(String flightId) {
         return streamPositions.getOrDefault(flightId, 0);
     }
+
+    public java.util.Map<String, FlightPlan> getActiveFlightPlans() {
+        return flightPlanCache;
+    }
+
+    public java.util.List<TrajectoryPoint4D> getTrajectoryPoints(String flightId) {
+        return trajectoryCache.getOrDefault(flightId, java.util.List.of());
+    }
+
+    public int getCurrentPointIndex(String flightId) {
+        List<TrajectoryPoint4D> traj = trajectoryCache.get(flightId);
+        if (traj == null || traj.isEmpty()) return 0;
+        int pos = streamPositions.getOrDefault(flightId, 0);
+        return Math.min(pos, traj.size() - 1);
+    }
+
+    public void updateFlightTrajectory(String flightId, java.util.List<TrajectoryPoint4D> newTrajectory) {
+        trajectoryCache.put(flightId, newTrajectory);
+        FlightPlan plan = flightPlanCache.get(flightId);
+        if (plan != null && newTrajectory != null && !newTrajectory.isEmpty()) {
+            List<com.atc.trajectory4d.model.Waypoint> newWaypoints = new java.util.ArrayList<>();
+            int step = Math.max(1, newTrajectory.size() / 15);
+            for (int i = 0; i < newTrajectory.size(); i += step) {
+                TrajectoryPoint4D p = newTrajectory.get(i);
+                newWaypoints.add(com.atc.trajectory4d.model.Waypoint.builder()
+                        .name("WPT_" + i)
+                        .latitude(p.getLatitude())
+                        .longitude(p.getLongitude())
+                        .altitude(p.getAltitude())
+                        .build());
+            }
+            if (!newWaypoints.isEmpty()
+                    && plan.getWaypoints() != null
+                    && !plan.getWaypoints().isEmpty()) {
+                newWaypoints.add(plan.getWaypoints().get(plan.getWaypoints().size() - 1));
+            }
+            plan.setWaypoints(newWaypoints);
+        }
+        streamPositions.put(flightId, Math.min(streamPositions.getOrDefault(flightId, 0),
+                newTrajectory != null ? newTrajectory.size() - 1 : 0));
+        log.info("Updated trajectory for flight {} with {} points", flightId,
+                newTrajectory != null ? newTrajectory.size() : 0);
+    }
 }

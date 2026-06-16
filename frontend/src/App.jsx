@@ -1,11 +1,15 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { Plane, Activity, MapPin, Clock, Settings, X, Play, RefreshCw, Cpu, Eye, EyeOff } from 'lucide-react';
+import { Plane, Activity, MapPin, Clock, Settings, X, Play, RefreshCw, Cpu, Eye, EyeOff, AlertTriangle } from 'lucide-react';
 import CesiumGlobe from './components/CesiumGlobe';
 import FlightList from './components/FlightList';
 import FlightInfoPanel from './components/FlightInfoPanel';
 import TrajectoryChart from './components/TrajectoryChart';
 import NotificationToast from './components/NotificationToast';
-import { fetchAllFlights, calculateTrajectory, startStreaming, stopStreaming } from './services/api';
+import AirspacePanel from './components/AirspacePanel';
+import {
+  fetchAllFlights, calculateTrajectory, startStreaming, stopStreaming,
+  fetchAllAirspaces, createAirspace, deleteAirspace, triggerAirspaceAvoidance, rerouteFlight,
+} from './services/api';
 import { useWebSocket } from './services/websocket';
 import { RenderPipeline } from './rendering/RenderPipeline';
 import { FlightTrajectoryBuffer } from './rendering/RingBuffer';
@@ -21,6 +25,11 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [cullingEnabled, setCullingEnabled] = useState(true);
   const [pipelineStats, setPipelineStats] = useState({ totalFlights: 0, totalPrimitives: 0 });
+  const [rightPanelTab, setRightPanelTab] = useState('flight');
+  const [drawingPolygon, setDrawingPolygon] = useState(false);
+  const [pendingVertices, setPendingVertices] = useState(null);
+  const [airspaces, setAirspaces] = useState([]);
+  const [rerouteResult, setRerouteResult] = useState(null);
 
   const cesiumRef = useRef(null);
   const pipelineRef = useRef(null);
@@ -48,16 +57,71 @@ function App() {
 
   useEffect(() => {
     loadFlights();
+    loadAirspaces();
     connect();
 
     subscribe('/topic/notifications', (message) => {
-      addNotification('info', message.body);
+      try {
+        const payload = JSON.parse(message.body);
+        if (payload && typeof payload === 'object' && payload.type) {
+          handleAirspaceNotification(payload);
+        } else {
+          addNotification('info', message.body);
+        }
+      } catch {
+        addNotification('info', message.body);
+      }
     });
 
     return () => {
       disconnect();
     };
   }, [connect, disconnect, subscribe, addNotification]);
+
+  const loadAirspaces = async () => {
+    const list = await fetchAllAirspaces();
+    setAirspaces(list || []);
+    if (cesiumRef.current) {
+      list.forEach(a => cesiumRef.current.renderAirspace(a));
+    }
+  };
+
+  const handleAirspaceNotification = (payload) => {
+    switch (payload.type) {
+      case 'AIRSPACE_CREATED':
+        if (payload.airspace) {
+          setAirspaces(prev => [...prev.filter(a => a.id !== payload.airspace.id), payload.airspace]);
+          cesiumRef.current?.renderAirspace(payload.airspace);
+          addNotification('warning', `Restricted zone created: ${payload.airspace.name || payload.airspace.id}`);
+        }
+        break;
+      case 'AIRSPACE_REMOVED':
+        setAirspaces(prev => prev.filter(a => a.id !== payload.airspaceId));
+        cesiumRef.current?.removeAirspace(payload.airspaceId);
+        addNotification('info', `Restricted zone removed: ${payload.airspaceId}`);
+        break;
+      case 'REROUTE_COMPLETE': {
+        const result = {
+          flightId: payload.flightId,
+          success: payload.success,
+          extraDistanceMeters: payload.extraDistanceMeters,
+          extraTimeSeconds: payload.extraTimeSeconds,
+          detourRoute: payload.detourWaypoints,
+        };
+        setRerouteResult(result);
+        if (payload.detourWaypoints && selectedFlight && selectedFlight.flightId === payload.flightId) {
+          cesiumRef.current?.renderRouteComparison(selectedFlight.waypoints, payload.detourWaypoints);
+        }
+        addNotification(
+          payload.success ? 'success' : 'error',
+          `Reroute ${payload.success ? 'successful' : 'failed'} for ${payload.flightId}`
+        );
+        break;
+      }
+      default:
+        addNotification('info', JSON.stringify(payload));
+    }
+  };
 
   useEffect(() => {
     if (!selectedFlight || !isConnected) return;
@@ -204,6 +268,66 @@ function App() {
     }
     if (pipelineRef.current) {
       pipelineRef.current.clearFlight(selectedFlight?.flightId);
+    }
+  };
+
+  const handleStartDrawing = () => {
+    if (!cesiumRef.current) return;
+    setDrawingPolygon(true);
+    setPendingVertices(null);
+    setRerouteResult(null);
+    cesiumRef.current.startPolygonDrawing(
+      (vertices) => {
+        setDrawingPolygon(false);
+        setPendingVertices(vertices);
+        addNotification('info', `Polygon defined with ${vertices.length} vertices — submit the zone`);
+      },
+      () => {
+        setDrawingPolygon(false);
+        setPendingVertices(null);
+      }
+    );
+  };
+
+  const handleCancelDrawing = () => {
+    cesiumRef.current?.cancelPolygonDrawing();
+    setDrawingPolygon(false);
+    setPendingVertices(null);
+  };
+
+  const handleSubmitAirspace = async (payload) => {
+    try {
+      const created = await createAirspace(payload);
+      setPendingVertices(null);
+      if (created) {
+        setAirspaces(prev => [...prev.filter(a => a.id !== created.id), created]);
+        cesiumRef.current?.renderAirspace(created);
+        addNotification('success', `Restricted zone created: ${created.name || created.id}`);
+      }
+      return created;
+    } catch (e) {
+      addNotification('error', 'Failed to create restricted zone');
+      throw e;
+    }
+  };
+
+  const handleDeleteAirspace = async (airspaceId) => {
+    try {
+      await deleteAirspace(airspaceId);
+      setAirspaces(prev => prev.filter(a => a.id !== airspaceId));
+      cesiumRef.current?.removeAirspace(airspaceId);
+      addNotification('info', `Restricted zone deleted: ${airspaceId}`);
+    } catch (e) {
+      addNotification('error', 'Failed to delete restricted zone');
+    }
+  };
+
+  const handleTriggerAvoidance = async (airspaceId) => {
+    try {
+      await triggerAirspaceAvoidance(airspaceId);
+      addNotification('info', `Reroute triggered for zone ${airspaceId} — check notifications`);
+    } catch (e) {
+      addNotification('error', 'Failed to trigger avoidance');
     }
   };
 
@@ -394,47 +518,113 @@ function App() {
           </div>
         </div>
 
-        {/* Right Panel - Flight Info */}
+        {/* Right Panel - Flight Info / Airspace */}
         <div className="w-96 glass-panel m-3 flex flex-col overflow-hidden flex-shrink-0">
-          {selectedFlight ? (
-            <>
-              <div className="glass-panel-header flex items-center justify-between">
-                <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-                  <Plane className="w-4 h-4" />
-                  Flight Information
-                </h2>
-                <span className="text-lg font-bold text-atc-accent">
-                  {selectedFlight.flightId}
+          <div className="flex border-b border-white/10">
+            <button
+              onClick={() => setRightPanelTab('flight')}
+              className={`flex-1 py-2.5 text-sm font-medium flex items-center justify-center gap-2 transition ${
+                rightPanelTab === 'flight'
+                  ? 'bg-white/5 text-atc-accent border-b-2 border-atc-accent'
+                  : 'text-gray-400 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              <Plane className="w-4 h-4" /> Flight
+            </button>
+            <button
+              onClick={() => setRightPanelTab('airspace')}
+              className={`flex-1 py-2.5 text-sm font-medium flex items-center justify-center gap-2 transition relative ${
+                rightPanelTab === 'airspace'
+                  ? 'bg-white/5 text-red-400 border-b-2 border-red-400'
+                  : 'text-gray-400 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              <AlertTriangle className="w-4 h-4" /> Airspace
+              {airspaces.length > 0 && (
+                <span className="absolute top-1.5 right-3 w-4 h-4 text-[10px] bg-red-500 text-white rounded-full flex items-center justify-center font-bold">
+                  {airspaces.length}
                 </span>
-              </div>
+              )}
+            </button>
+          </div>
 
-              <div className="flex-1 overflow-y-auto scrollbar-thin">
-                <FlightInfoPanel
-                  flight={selectedFlight}
-                  currentPoint={currentPoint}
-                  trajectoryPoints={trajectoryPointsForChart}
-                />
+          <div className="flex-1 overflow-hidden">
+            {rightPanelTab === 'flight' ? (
+              selectedFlight ? (
+                <div className="h-full flex flex-col overflow-hidden">
+                  <div className="glass-panel-header flex items-center justify-between px-4">
+                    <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+                      <Plane className="w-4 h-4" />
+                      Flight Information
+                    </h2>
+                    <span className="text-lg font-bold text-atc-accent">
+                      {selectedFlight.flightId}
+                    </span>
+                  </div>
 
-                {trajectoryPointsForChart.length > 0 && (
-                  <div className="border-t border-white/10">
-                    <div className="glass-panel-header">
-                      <h3 className="text-sm font-semibold text-white">Trajectory Profile</h3>
-                    </div>
-                    <div className="p-4">
-                      <TrajectoryChart trajectoryPoints={trajectoryPointsForChart} />
+                  <div className="flex-1 overflow-y-auto scrollbar-thin">
+                    <FlightInfoPanel
+                      flight={selectedFlight}
+                      currentPoint={currentPoint}
+                      trajectoryPoints={trajectoryPointsForChart}
+                    />
+
+                    {trajectoryPointsForChart.length > 0 && (
+                      <div className="border-t border-white/10">
+                        <div className="glass-panel-header">
+                          <h3 className="text-sm font-semibold text-white">Trajectory Profile</h3>
+                        </div>
+                        <div className="p-4">
+                          <TrajectoryChart trajectoryPoints={trajectoryPointsForChart} />
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="p-4 border-t border-white/10">
+                      <button
+                        onClick={async () => {
+                          try {
+                            const result = await rerouteFlight(selectedFlight.flightId);
+                            setRerouteResult(result);
+                            if (result?.success && result.detourRoute) {
+                              cesiumRef.current?.renderRouteComparison(selectedFlight.waypoints, result.detourRoute);
+                              addNotification('success', `Rerouted ${selectedFlight.flightId}: +${result.extraDistanceMeters?.toFixed(0)}m`);
+                            } else {
+                              addNotification('error', result?.message || 'Reroute failed');
+                            }
+                          } catch (e) {
+                            addNotification('error', 'Reroute request failed');
+                          }
+                        }}
+                        className="w-full bg-amber-600 hover:bg-amber-500 text-white py-2 rounded-lg font-semibold flex items-center justify-center gap-2"
+                      >
+                        <AlertTriangle className="w-4 h-4" /> Manual Reroute (Check Airspace)
+                      </button>
                     </div>
                   </div>
-                )}
-              </div>
-            </>
-          ) : (
-            <div className="flex-1 flex items-center justify-center">
-              <div className="text-center text-gray-400">
-                <Plane className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                <p className="text-sm">Select a flight to view details</p>
-              </div>
-            </div>
-          )}
+                </div>
+              ) : (
+                <div className="h-full flex items-center justify-center">
+                  <div className="text-center text-gray-400 px-4">
+                    <Plane className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                    <p className="text-sm">Select a flight to view details</p>
+                  </div>
+                </div>
+              )
+            ) : (
+              <AirspacePanel
+                drawing={drawingPolygon}
+                onStartDrawing={handleStartDrawing}
+                onCancelDrawing={handleCancelDrawing}
+                pendingVertices={pendingVertices}
+                onSubmit={handleSubmitAirspace}
+                airspaces={airspaces}
+                onDeleteAirspace={handleDeleteAirspace}
+                onTriggerAvoidance={handleTriggerAvoidance}
+                rerouteResult={rerouteResult}
+              />
+            )}
+          </div>
         </div>
       </div>
 
