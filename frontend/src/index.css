@@ -1,0 +1,110 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  height: 100vh;
+  overflow: hidden;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+body {
+  background-color: #0f172a;
+  color: #e2e8f0;
+}
+
+.cesium-viewer-bottom {
+  display: none !important;
+}
+
+.cesium-viewer-toolbar {
+  top: 10px !important;
+  right: 10px !important;
+}
+
+.cesium-viewer-animationContainer,
+.cesium-viewer-timelineContainer {
+  display: none !important;
+}
+
+@layer components {
+  .glass-panel {
+    @apply bg-atc-panel/90 backdrop-blur-md border border-white/10 rounded-lg shadow-xl;
+  }
+
+  .glass-panel-header {
+    @apply px-4 py-3 border-b border-white/10 bg-atc-panel-light/50;
+  }
+
+  .btn-primary {
+    @apply px-4 py-2 bg-atc-primary hover:bg-atc-primary/80 text-white rounded-md transition-colors duration-200 font-medium;
+  }
+
+  .btn-secondary {
+    @apply px-4 py-2 bg-atc-panel-light hover:bg-atc-panel-light/80 text-white rounded-md transition-colors duration-200 font-medium;
+  }
+
+  .btn-success {
+    @apply px-4 py-2 bg-atc-success hover:bg-atc-success/80 text-white rounded-md transition-colors duration-200 font-medium;
+  }
+
+  .btn-danger {
+    @apply px-4 py-2 bg-atc-danger hover:bg-atc-danger/80 text-white rounded-md transition-colors duration-200 font-medium;
+  }
+
+  .input-field {
+    @apply w-full px-3 py-2 bg-atc-panel-light border border-white/20 rounded-md text-white placeholder-gray-400 focus:outline-none focus:border-atc-accent focus:ring-1 focus:ring-atc-accent;
+  }
+
+  .data-label {
+    @apply text-xs text-gray-400 uppercase tracking-wider;
+  }
+
+  .data-value {
+    @apply text-sm font-medium text-white;
+  }
+
+  .flight-phase-takeoff { @apply text-orange-400; }
+  .flight-phase-climb { @apply text-green-400; }
+  .flight-phase-cruise { @apply text-blue-400; }
+  .flight-phase-descent { @apply text-yellow-400; }
+  .flight-phase-landing { @apply text-red-400; }
+
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 3px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 3px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.3);
+  }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fadeIn {
+  animation: fadeIn 0.3s ease-out;
+}

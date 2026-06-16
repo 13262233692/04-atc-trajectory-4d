@@ -1,0 +1,107 @@
+{
+  "flightId": "MU5101",
+  "aircraftType": "A320",
+  "airline": "China Eastern Airlines",
+  "flightNumber": "MU5101",
+  "departureAirport": "ZBAA",
+  "arrivalAirport": "ZSPD",
+  "departureTime": "2026-06-16T08:00:00",
+  "initialMass": 72000,
+  "fuelMass": 12000,
+  "payloadMass": 8000,
+  "cruiseAltitude": 11000,
+  "cruiseSpeed": 230,
+  "cruiseMach": 0.78,
+  "waypoints": [
+    {
+      "name": "ZBAA",
+      "latitude": 40.0801,
+      "longitude": 116.5846,
+      "altitude": 35.0,
+      "speed": 80.0,
+      "isDeparture": true,
+      "isDestination": false
+    },
+    {
+      "name": "W39",
+      "latitude": 40.5000,
+      "longitude": 117.0000,
+      "altitude": 3000.0,
+      "speed": 130.0,
+      "isDeparture": false,
+      "isDestination": false
+    },
+    {
+      "name": "W54",
+      "latitude": 39.5000,
+      "longitude": 118.0000,
+      "altitude": 7000.0,
+      "speed": 200.0,
+      "isDeparture": false,
+      "isDestination": false
+    },
+    {
+      "name": "W68",
+      "latitude": 38.0000,
+      "longitude": 119.0000,
+      "altitude": 11000.0,
+      "speed": 230.0,
+      "isDeparture": false,
+      "isDestination": false
+    },
+    {
+      "name": "W79",
+      "latitude": 36.0000,
+      "longitude": 120.0000,
+      "altitude": 11000.0,
+      "speed": 230.0,
+      "isDeparture": false,
+      "isDestination": false
+    },
+    {
+      "name": "W90",
+      "latitude": 34.0000,
+      "longitude": 121.0000,
+      "altitude": 11000.0,
+      "speed": 230.0,
+      "isDeparture": false,
+      "isDestination": false
+    },
+    {
+      "name": "W101",
+      "latitude": 32.5000,
+      "longitude": 121.5000,
+      "altitude": 8000.0,
+      "speed": 200.0,
+      "isDeparture": false,
+      "isDestination": false
+    },
+    {
+      "name": "W112",
+      "latitude": 31.5000,
+      "longitude": 121.8000,
+      "altitude": 4000.0,
+      "speed": 150.0,
+      "isDeparture": false,
+      "isDestination": false
+    },
+    {
+      "name": "W123",
+      "latitude": 31.3000,
+      "longitude": 121.8500,
+      "altitude": 1000.0,
+      "speed": 100.0,
+      "isDeparture": false,
+      "isDestination": false
+    },
+    {
+      "name": "ZSPD",
+      "latitude": 31.1434,
+      "longitude": 121.8058,
+      "altitude": 4.0,
+      "speed": 70.0,
+      "isDeparture": false,
+      "isDestination": true
+    }
+  ]
+}
