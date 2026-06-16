@@ -1,51 +1,129 @@
-import { useEffect, useRef, useState, useMemo } from 'react';
+import { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
 import * as Cesium from 'cesium';
-import { Viewer, Entity, PolylineGraphics, PointGraphics, LabelGraphics, ModelGraphics, PathGraphics } from 'resium';
+import { PrimitiveRenderer } from '../rendering/PrimitiveRenderer';
 import { format } from 'date-fns';
 
-function CesiumGlobe({ trajectoryPoints, currentPoint, selectedFlight }) {
+const CesiumGlobe = forwardRef(function CesiumGlobe({ selectedFlight, renderPipeline }, ref) {
+  const containerRef = useRef(null);
   const viewerRef = useRef(null);
-  const [viewerReady, setViewerReady] = useState(false);
+  const rendererRef = useRef(null);
+  const [currentPoint, setCurrentPoint] = useState(null);
+  const [renderStats, setRenderStats] = useState({ totalFlights: 0, totalPrimitives: 0 });
 
-  useEffect(() => {
-    if (viewerRef.current && !viewerReady) {
-      const viewer = viewerRef.current.cesiumElement;
-      
-      viewer.scene.globe.enableLighting = true;
-      viewer.scene.globe.baseColor = Cesium.Color.BLACK;
-      viewer.scene.backgroundColor = Cesium.Color.BLACK;
-      viewer.scene.skyAtmosphere.show = true;
-      viewer.scene.fog.enabled = true;
-      viewer.scene.skyBox.show = true;
+  useImperativeHandle(ref, () => ({
+    getCurrentPoint: () => currentPoint,
+    getViewer: () => viewerRef.current,
+    getRenderer: () => rendererRef.current,
+  }), [currentPoint]);
 
-      viewer.infoBox.show = false;
-      if (viewer.geocoder) viewer.geocoder.viewModel.show = false;
-      if (viewer.homeButton) viewer.homeButton.viewModel.show = false;
-      if (viewer.sceneModePicker) viewer.sceneModePicker.viewModel.show = false;
-      if (viewer.baseLayerPicker) viewer.baseLayerPicker.viewModel.show = false;
-      if (viewer.navigationHelpButton) viewer.navigationHelpButton.viewModel.show = false;
+  const onFrameUpdate = useCallback((data) => {
+    const renderer = rendererRef.current;
+    if (!renderer) return;
 
-      const imageryProvider = new Cesium.OpenStreetMapImageryProvider({
-        url: 'https://tile.openstreetmap.org/',
-      });
-      viewer.imageryLayers.addImageryProvider(imageryProvider);
+    renderer.updateFlights(data.flightPositions, data.flightTrails);
 
-      setViewerReady(true);
+    if (data.selectedPoint) {
+      setCurrentPoint(data.selectedPoint);
     }
-  }, [viewerReady]);
+
+    if (data.stats) {
+      setRenderStats(prev => ({
+        ...prev,
+        totalFlights: data.stats.totalFlights,
+      }));
+    }
+  }, []);
+
+  const onFlightSelected = useCallback((data) => {
+  }, []);
+
+  const onCleared = useCallback(() => {
+    setCurrentPoint(null);
+    setRenderStats({ totalFlights: 0, totalPrimitives: 0 });
+  }, []);
 
   useEffect(() => {
-    if (viewerRef.current && trajectoryPoints.length > 0) {
-      const viewer = viewerRef.current.cesiumElement;
-      
-      const lastPoint = trajectoryPoints[trajectoryPoints.length - 1];
-      if (lastPoint) {
+    if (!containerRef.current || viewerRef.current) return;
+
+    const viewer = new Cesium.Viewer(containerRef.current, {
+      timeline: false,
+      animation: false,
+      infoBox: false,
+      geocoder: false,
+      homeButton: false,
+      sceneModePicker: false,
+      baseLayerPicker: false,
+      navigationHelpButton: false,
+      navigationInstructionsInitiallyVisible: false,
+      shouldAnimate: true,
+      skyAtmosphere: true,
+      creditContainer: document.createElement('div'),
+      requestRenderMode: true,
+      maximumRenderTimeChange: Infinity,
+      targetFrameRate: 30,
+    });
+
+    viewer.scene.globe.enableLighting = true;
+    viewer.scene.globe.baseColor = Cesium.Color.BLACK;
+    viewer.scene.backgroundColor = Cesium.Color.BLACK;
+    viewer.scene.skyAtmosphere.show = true;
+    viewer.scene.fog.enabled = true;
+    viewer.scene.skyBox.show = true;
+
+    viewer.scene.globe.tileCacheSize = 100;
+    viewer.scene.logarithmicDepthBuffer = true;
+
+    const imageryProvider = new Cesium.OpenStreetMapImageryProvider({
+      url: 'https://tile.openstreetmap.org/',
+    });
+    viewer.imageryLayers.addImageryProvider(imageryProvider);
+    viewer.imageryLayers.get(0).minimumTerrainLevel = 4;
+
+    viewerRef.current = viewer;
+
+    const renderer = new PrimitiveRenderer(viewer);
+    rendererRef.current = renderer;
+
+    if (renderPipeline) {
+      renderPipeline.init(viewer, onFrameUpdate, onFlightSelected, onCleared);
+      renderPipeline.renderer = renderer;
+    }
+
+    return () => {
+      if (renderPipeline) {
+        renderPipeline.destroy();
+      }
+      if (renderer) {
+        renderer.destroy();
+      }
+      if (viewer && !viewer.isDestroyed()) {
+        viewer.destroy();
+      }
+      viewerRef.current = null;
+      rendererRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (selectedFlight && viewerRef.current) {
+      const viewer = viewerRef.current;
+
+      if (selectedFlight.waypoints && rendererRef.current) {
+        rendererRef.current.updateWaypoints(selectedFlight.waypoints);
+      }
+
+      if (renderPipeline) {
+        renderPipeline.selectFlight(selectedFlight.flightId);
+      }
+
+      if (selectedFlight.waypoints && selectedFlight.waypoints.length > 0) {
+        const first = selectedFlight.waypoints[0];
+        const last = selectedFlight.waypoints[selectedFlight.waypoints.length - 1];
+        const midLat = (first.latitude + last.latitude) / 2;
+        const midLon = (first.longitude + last.longitude) / 2;
+
         viewer.camera.flyTo({
-          destination: Cesium.Cartesian3.fromDegrees(
-            lastPoint.longitude,
-            lastPoint.latitude,
-            (lastPoint.altitude || 0) + 50000,
-          ),
+          destination: Cesium.Cartesian3.fromDegrees(midLon, midLat, 500000),
           orientation: {
             heading: Cesium.Math.toRadians(0),
             pitch: Cesium.Math.toRadians(-45),
@@ -55,220 +133,25 @@ function CesiumGlobe({ trajectoryPoints, currentPoint, selectedFlight }) {
         });
       }
     }
-  }, [selectedFlight]);
+  }, [selectedFlight, renderPipeline]);
 
-  const trajectoryPositions = useMemo(() => {
-    if (trajectoryPoints.length < 2) {
-      return [];
-    }
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (rendererRef.current) {
+        const stats = rendererRef.current.getStats();
+        setRenderStats(prev => ({
+          ...prev,
+          totalPrimitives: stats.totalPrimitives,
+        }));
+      }
+    }, 2000);
 
-    return trajectoryPoints
-      .filter(point => point.longitude && point.latitude && point.altitude !== undefined)
-      .map(point => Cesium.Cartesian3.fromDegrees(
-        point.longitude,
-        point.latitude,
-        Math.max(0, point.altitude)
-      ));
-  }, [trajectoryPoints]);
-
-  const trailPositions = useMemo(() => {
-    if (trajectoryPoints.length < 2) {
-      return [];
-    }
-
-    const startIdx = Math.max(0, trajectoryPoints.length - 100);
-    return trajectoryPoints
-      .slice(startIdx)
-      .filter(point => point.longitude && point.latitude && point.altitude !== undefined)
-      .map(point => Cesium.Cartesian3.fromDegrees(
-        point.longitude,
-        point.latitude,
-        Math.max(0, point.altitude)
-      ));
-  }, [trajectoryPoints]);
-
-  const waypointEntities = useMemo(() => {
-    if (!selectedFlight || !selectedFlight.waypoints) {
-      return [];
-    }
-
-    return selectedFlight.waypoints.map((waypoint, index) => ({
-      id: `waypoint-${index}`,
-      name: waypoint.name,
-      position: Cesium.Cartesian3.fromDegrees(
-        waypoint.longitude,
-        waypoint.latitude,
-        waypoint.altitude || 5000
-      ),
-    }));
-  }, [selectedFlight]);
-
-  const getFlightPhaseColor = (flightPhase) => {
-    switch (flightPhase) {
-      case 'TAKEOFF':
-        return Cesium.Color.ORANGE;
-      case 'CLIMB':
-        return Cesium.Color.GREEN;
-      case 'CRUISE':
-        return Cesium.Color.CYAN;
-      case 'DESCENT':
-        return Cesium.Color.YELLOW;
-      case 'LANDING':
-        return Cesium.Color.RED;
-      default:
-        return Cesium.Color.WHITE;
-    }
-  };
-
-  const trajectoryEntity = {
-    id: 'trajectory-line',
-    polyline: {
-      positions: trajectoryPositions,
-      width: 3,
-      material: Cesium.Color.YELLOW.withAlpha(0.6),
-      clampToGround: false,
-    },
-  };
-
-  const trailEntity = {
-    id: 'trail-line',
-    polyline: {
-      positions: trailPositions,
-      width: 5,
-      material: Cesium.Color.CYAN.withAlpha(0.8),
-      clampToGround: false,
-    },
-  };
+    return () => clearInterval(interval);
+  }, []);
 
   return (
     <div className="w-full h-full relative">
-      <Viewer
-        ref={viewerRef}
-        full
-        timeline={false}
-        animation={false}
-        infoBox={false}
-        geocoder={false}
-        homeButton={false}
-        sceneModePicker={false}
-        baseLayerPicker={false}
-        navigationHelpButton={false}
-        navigationInstructionsInitiallyVisible={false}
-        shouldAnimate={true}
-        skyAtmosphere
-        creditContainer="hidden"
-      >
-        {trajectoryPositions.length >= 2 && (
-          <Entity {...trajectoryEntity} />
-        )}
-
-        {trailPositions.length >= 2 && (
-          <Entity {...trailEntity} />
-        )}
-
-        {trajectoryPoints.map((point, index) => (
-          point.longitude && point.latitude && (
-            <Entity
-              key={`point-${index}`}
-              position={Cesium.Cartesian3.fromDegrees(
-                point.longitude,
-                point.latitude,
-                Math.max(0, point.altitude || 0)
-              )}
-            >
-              <PointGraphics
-                pixelSize={3}
-                color={getFlightPhaseColor(point.flightPhase)}
-                outlineColor={Cesium.Color.WHITE}
-                outlineWidth={1}
-              />
-            </Entity>
-          )
-        ))}
-
-        {waypointEntities.map((waypoint) => (
-          <Entity
-            key={waypoint.id}
-            position={waypoint.position}
-          >
-            <PointGraphics
-              pixelSize={8}
-              color={Cesium.Color.RED}
-              outlineColor={Cesium.Color.WHITE}
-              outlineWidth={2}
-            />
-            <LabelGraphics
-              text={waypoint.name}
-              font="bold 14px sans-serif"
-              fillColor={Cesium.Color.WHITE}
-              outlineColor={Cesium.Color.BLACK}
-              outlineWidth={2}
-              style={Cesium.LabelStyle.FILL_AND_OUTLINE}
-              pixelOffset={new Cesium.Cartesian2(0, -20)}
-            />
-          </Entity>
-        ))}
-
-        {currentPoint && currentPoint.longitude && currentPoint.latitude && (
-          <Entity
-            id="current-aircraft"
-            position={Cesium.Cartesian3.fromDegrees(
-              currentPoint.longitude,
-              currentPoint.latitude,
-              Math.max(0, currentPoint.altitude || 0)
-            )}
-            orientation={Cesium.Transforms.headingPitchRollQuaternion(
-              Cesium.Cartesian3.fromDegrees(
-                currentPoint.longitude,
-                currentPoint.latitude,
-                Math.max(0, currentPoint.altitude || 0)
-              ),
-              new Cesium.HeadingPitchRoll(
-                Cesium.Math.toRadians(currentPoint.heading || 0),
-                Cesium.Math.toRadians(0),
-                0
-              )
-            )}
-          >
-            <ModelGraphics
-              uri="https://assets.cesium.com/cesiumjs/SampleData/models/CesiumAir/Cesium_Air.glb"
-              minimumPixelSize={64}
-              maximumScale={200}
-              color={getFlightPhaseColor(currentPoint.flightPhase)}
-              colorBlendMode={Cesium.ColorBlendMode.MIX}
-              colorBlendAmount={0.5}
-              heightReference={Cesium.HeightReference.NONE}
-            />
-
-            <PointGraphics
-              pixelSize={12}
-              color={getFlightPhaseColor(currentPoint.flightPhase)}
-              outlineColor={Cesium.Color.WHITE}
-              outlineWidth={2}
-              heightReference={Cesium.HeightReference.NONE}
-            />
-
-            <LabelGraphics
-              text={selectedFlight ? selectedFlight.flightId : ''}
-              font="bold 16px sans-serif"
-              fillColor={Cesium.Color.WHITE}
-              outlineColor={Cesium.Color.BLACK}
-              outlineWidth={3}
-              style={Cesium.LabelStyle.FILL_AND_OUTLINE}
-              pixelOffset={new Cesium.Cartesian2(0, -40)}
-              heightReference={Cesium.HeightReference.NONE}
-            />
-
-            <PathGraphics
-              leadTime={0}
-              trailTime={60}
-              width={2}
-              resolution={1}
-              material={getFlightPhaseColor(currentPoint.flightPhase)}
-            />
-          </Entity>
-        )}
-      </Viewer>
+      <div ref={containerRef} className="w-full h-full" />
 
       {currentPoint && (
         <div className="absolute top-4 left-4 glass-panel p-3 text-sm animate-fadeIn">
@@ -297,6 +180,17 @@ function CesiumGlobe({ trajectoryPoints, currentPoint, selectedFlight }) {
         </div>
       )}
 
+      <div className="absolute top-4 right-4 glass-panel p-2 text-xs space-y-1">
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse"></div>
+          <span className="text-gray-300">Flights: <span className="text-white font-mono">{renderStats.totalFlights}</span></span>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-cyan-400"></div>
+          <span className="text-gray-300">Primitives: <span className="text-white font-mono">{renderStats.totalPrimitives}</span></span>
+        </div>
+      </div>
+
       <div className="absolute bottom-20 right-4 glass-panel p-3 text-xs">
         <div className="font-semibold text-white mb-2">Flight Phase Legend</div>
         <div className="space-y-1">
@@ -324,6 +218,6 @@ function CesiumGlobe({ trajectoryPoints, currentPoint, selectedFlight }) {
       </div>
     </div>
   );
-}
+});
 
 export default CesiumGlobe;

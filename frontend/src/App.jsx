@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Plane, Activity, MapPin, Clock, Settings, X, Play, RefreshCw } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { Plane, Activity, MapPin, Clock, Settings, X, Play, RefreshCw, Cpu, Eye, EyeOff } from 'lucide-react';
 import CesiumGlobe from './components/CesiumGlobe';
 import FlightList from './components/FlightList';
 import FlightInfoPanel from './components/FlightInfoPanel';
@@ -7,18 +7,36 @@ import TrajectoryChart from './components/TrajectoryChart';
 import NotificationToast from './components/NotificationToast';
 import { fetchAllFlights, calculateTrajectory, startStreaming, stopStreaming } from './services/api';
 import { useWebSocket } from './services/websocket';
+import { RenderPipeline } from './rendering/RenderPipeline';
+import { FlightTrajectoryBuffer } from './rendering/RingBuffer';
 
 function App() {
   const [flights, setFlights] = useState([]);
   const [selectedFlight, setSelectedFlight] = useState(null);
-  const [trajectoryPoints, setTrajectoryPoints] = useState([]);
   const [currentPoint, setCurrentPoint] = useState(null);
+  const [trajectoryHistory, setTrajectoryHistory] = useState([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isCalculating, setIsCalculating] = useState(false);
   const [notifications, setNotifications] = useState([]);
   const [showSettings, setShowSettings] = useState(false);
+  const [cullingEnabled, setCullingEnabled] = useState(true);
+  const [pipelineStats, setPipelineStats] = useState({ totalFlights: 0, totalPrimitives: 0 });
+
+  const cesiumRef = useRef(null);
+  const pipelineRef = useRef(null);
+  const historyBufferRef = useRef(null);
 
   const { connect, disconnect, subscribe, isConnected } = useWebSocket();
+
+  useEffect(() => {
+    const pipeline = new RenderPipeline();
+    pipelineRef.current = pipeline;
+
+    return () => {
+      pipeline.destroy();
+      pipelineRef.current = null;
+    };
+  }, []);
 
   const addNotification = useCallback((type, message) => {
     const id = Date.now();
@@ -42,27 +60,72 @@ function App() {
   }, [connect, disconnect, subscribe, addNotification]);
 
   useEffect(() => {
-    if (selectedFlight && isConnected) {
-      const trajectorySub = subscribe(`/topic/trajectory/${selectedFlight.flightId}`, (message) => {
+    if (!selectedFlight || !isConnected) return;
+
+    const trajectorySub = subscribe(`/topic/trajectory/${selectedFlight.flightId}`, (message) => {
+      try {
         const point = JSON.parse(message.body);
-        setTrajectoryPoints(prev => [...prev, point]);
-        setCurrentPoint(point);
-      });
 
-      const statusSub = subscribe(`/topic/status/${selectedFlight.flightId}`, (message) => {
-        const status = JSON.parse(message.body);
-        if (status === 'COMPLETED') {
-          setIsStreaming(false);
-          addNotification('success', `Flight ${selectedFlight.flightId} trajectory calculation completed`);
+        if (pipelineRef.current) {
+          pipelineRef.current.feedTrajectoryPoint(point);
         }
-      });
 
-      return () => {
-        trajectorySub.unsubscribe();
-        statusSub.unsubscribe();
-      };
-    }
+        setCurrentPoint(point);
+        if (historyBufferRef.current) {
+          historyBufferRef.current.update(point, null);
+        }
+      } catch (e) {
+        console.error('Error parsing trajectory point:', e);
+      }
+    });
+
+    const batchSub = subscribe('/topic/trajectory/batch', (message) => {
+      try {
+        const points = JSON.parse(message.body);
+        if (Array.isArray(points) && pipelineRef.current) {
+          pipelineRef.current.feedTrajectoryBatch(points);
+        }
+      } catch (e) {
+        console.error('Error parsing trajectory batch:', e);
+      }
+    });
+
+    const statusSub = subscribe(`/topic/status/${selectedFlight.flightId}`, (message) => {
+      const status = message.body;
+      if (status === 'COMPLETED') {
+        setIsStreaming(false);
+        addNotification('success', `Flight ${selectedFlight.flightId} trajectory calculation completed`);
+      }
+    });
+
+    return () => {
+      trajectorySub.unsubscribe();
+      try { batchSub.unsubscribe(); } catch (e) {}
+      statusSub.unsubscribe();
+    };
   }, [selectedFlight, isConnected, subscribe, addNotification]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (pipelineRef.current) {
+        pipelineRef.current.getStats().then(stats => {
+          setPipelineStats(prev => ({
+            ...prev,
+            totalFlights: stats.totalFlights || 0,
+            totalPrimitives: stats.rendererStats?.totalPrimitives || 0,
+          }));
+        }).catch(() => {});
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    if (pipelineRef.current) {
+      pipelineRef.current.setCullingEnabled(cullingEnabled);
+    }
+  }, [cullingEnabled]);
 
   const loadFlights = async () => {
     try {
@@ -75,8 +138,14 @@ function App() {
 
   const handleSelectFlight = (flight) => {
     setSelectedFlight(flight);
-    setTrajectoryPoints([]);
     setCurrentPoint(null);
+    setTrajectoryHistory([]);
+
+    historyBufferRef.current = new FlightTrajectoryBuffer(flight.flightId, 720, 120);
+
+    if (pipelineRef.current) {
+      pipelineRef.current.selectFlight(flight.flightId);
+    }
   };
 
   const handleCalculateTrajectory = async () => {
@@ -99,8 +168,11 @@ function App() {
     try {
       await startStreaming(selectedFlight.flightId);
       setIsStreaming(true);
-      setTrajectoryPoints([]);
       setCurrentPoint(null);
+      setTrajectoryHistory([]);
+      if (historyBufferRef.current) {
+        historyBufferRef.current.clear();
+      }
       addNotification('info', `Started streaming for ${selectedFlight.flightId}`);
     } catch (error) {
       addNotification('error', 'Failed to start streaming');
@@ -125,9 +197,22 @@ function App() {
   };
 
   const handleClearTrajectory = () => {
-    setTrajectoryPoints([]);
     setCurrentPoint(null);
+    setTrajectoryHistory([]);
+    if (historyBufferRef.current) {
+      historyBufferRef.current.clear();
+    }
+    if (pipelineRef.current) {
+      pipelineRef.current.clearFlight(selectedFlight?.flightId);
+    }
   };
+
+  const trajectoryPointsForChart = useMemo(() => {
+    if (historyBufferRef.current) {
+      return historyBufferRef.current.getHistoryArray();
+    }
+    return [];
+  }, [currentPoint]);
 
   return (
     <div className="w-full h-full flex flex-col bg-atc-dark">
@@ -147,9 +232,24 @@ function App() {
           <div className="flex items-center gap-2 px-3 py-1.5 bg-atc-panel-light rounded-md">
             <Activity className={`w-4 h-4 ${isConnected ? 'text-atc-success animate-pulse' : 'text-atc-danger'}`} />
             <span className="text-sm text-gray-300">
-              {isConnected ? 'WebSocket Connected' : 'WebSocket Disconnected'}
+              {isConnected ? 'WS Connected' : 'WS Disconnected'}
             </span>
           </div>
+
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-atc-panel-light rounded-md">
+            <Cpu className="w-4 h-4 text-cyan-400" />
+            <span className="text-sm text-gray-300">
+              {pipelineStats.totalFlights} flights | {pipelineStats.totalPrimitives} primitives
+            </span>
+          </div>
+
+          <button
+            onClick={() => setCullingEnabled(!cullingEnabled)}
+            className={`p-2 rounded-md transition-colors ${cullingEnabled ? 'bg-atc-success/20 text-atc-success' : 'bg-atc-panel-light text-gray-400'}`}
+            title={cullingEnabled ? 'Frustum Culling: ON' : 'Frustum Culling: OFF'}
+          >
+            {cullingEnabled ? <Eye className="w-5 h-5" /> : <EyeOff className="w-5 h-5" />}
+          </button>
 
           <button
             onClick={handleRefresh}
@@ -191,9 +291,9 @@ function App() {
         {/* Center - Cesium Globe */}
         <div className="flex-1 flex flex-col relative">
           <CesiumGlobe
-            trajectoryPoints={trajectoryPoints}
-            currentPoint={currentPoint}
+            ref={cesiumRef}
             selectedFlight={selectedFlight}
+            renderPipeline={pipelineRef.current}
           />
 
           {/* Control Buttons */}
@@ -209,7 +309,7 @@ function App() {
                 ) : (
                   <Play className="w-4 h-4" />
                 )}
-                Calculate Trajectory
+                Calculate
               </button>
 
               {!isStreaming ? (
@@ -218,7 +318,7 @@ function App() {
                   className="btn-success flex items-center gap-2"
                 >
                   <Play className="w-4 h-4" />
-                  Start Stream
+                  Stream
                 </button>
               ) : (
                 <button
@@ -226,7 +326,7 @@ function App() {
                   className="btn-danger flex items-center gap-2"
                 >
                   <X className="w-4 h-4" />
-                  Stop Stream
+                  Stop
                 </button>
               )}
 
@@ -245,8 +345,8 @@ function App() {
             <div className="flex items-center gap-6">
               <div className="flex items-center gap-2">
                 <MapPin className="w-4 h-4 text-atc-accent" />
-                <span className="data-label">Points:</span>
-                <span className="data-value">{trajectoryPoints.length}</span>
+                <span className="data-label">Flights:</span>
+                <span className="data-value">{pipelineStats.totalFlights}</span>
               </div>
 
               {currentPoint && (
@@ -270,16 +370,27 @@ function App() {
               )}
             </div>
 
-            {currentPoint && (
-              <div className={`px-3 py-1 rounded-full text-xs font-medium ${
-                currentPoint.flightPhase === 'CRUISE' ? 'bg-blue-500/20 text-blue-400' :
-                currentPoint.flightPhase === 'CLIMB' ? 'bg-green-500/20 text-green-400' :
-                currentPoint.flightPhase === 'DESCENT' ? 'bg-yellow-500/20 text-yellow-400' :
-                'bg-gray-500/20 text-gray-400'
-              }`}>
-                {currentPoint.flightPhase}
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-1 text-xs">
+                <Cpu className="w-3 h-3 text-cyan-400" />
+                <span className="text-gray-400">Worker</span>
               </div>
-            )}
+              <div className="flex items-center gap-1 text-xs">
+                {cullingEnabled ? <Eye className="w-3 h-3 text-green-400" /> : <EyeOff className="w-3 h-3 text-gray-400" />}
+                <span className="text-gray-400">Culling</span>
+              </div>
+
+              {currentPoint && (
+                <div className={`px-3 py-1 rounded-full text-xs font-medium ${
+                  currentPoint.flightPhase === 'CRUISE' ? 'bg-blue-500/20 text-blue-400' :
+                  currentPoint.flightPhase === 'CLIMB' ? 'bg-green-500/20 text-green-400' :
+                  currentPoint.flightPhase === 'DESCENT' ? 'bg-yellow-500/20 text-yellow-400' :
+                  'bg-gray-500/20 text-gray-400'
+                }`}>
+                  {currentPoint.flightPhase}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
@@ -301,16 +412,16 @@ function App() {
                 <FlightInfoPanel
                   flight={selectedFlight}
                   currentPoint={currentPoint}
-                  trajectoryPoints={trajectoryPoints}
+                  trajectoryPoints={trajectoryPointsForChart}
                 />
 
-                {trajectoryPoints.length > 0 && (
+                {trajectoryPointsForChart.length > 0 && (
                   <div className="border-t border-white/10">
                     <div className="glass-panel-header">
                       <h3 className="text-sm font-semibold text-white">Trajectory Profile</h3>
                     </div>
                     <div className="p-4">
-                      <TrajectoryChart trajectoryPoints={trajectoryPoints} />
+                      <TrajectoryChart trajectoryPoints={trajectoryPointsForChart} />
                     </div>
                   </div>
                 )}
@@ -344,7 +455,7 @@ function App() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="glass-panel w-96 animate-fadeIn">
             <div className="glass-panel-header flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-white">Settings</h2>
+              <h2 className="text-sm font-semibold text-white">Performance Settings</h2>
               <button
                 onClick={() => setShowSettings(false)}
                 className="p-1 hover:bg-atc-panel-light rounded"
@@ -369,11 +480,28 @@ function App() {
                   className="input-field"
                 />
               </div>
+              <div className="flex items-center justify-between">
+                <label className="data-label">Frustum Culling</label>
+                <button
+                  onClick={() => setCullingEnabled(!cullingEnabled)}
+                  className={`px-3 py-1 rounded text-sm ${cullingEnabled ? 'bg-atc-success text-white' : 'bg-atc-panel-light text-gray-400'}`}
+                >
+                  {cullingEnabled ? 'ON' : 'OFF'}
+                </button>
+              </div>
               <div>
-                <label className="data-label block mb-1">Trajectory Step (seconds)</label>
+                <label className="data-label block mb-1">Max Flights (Worker)</label>
                 <input
                   type="number"
-                  defaultValue="5"
+                  defaultValue="2000"
+                  className="input-field"
+                />
+              </div>
+              <div>
+                <label className="data-label block mb-1">Trail Length (positions)</label>
+                <input
+                  type="number"
+                  defaultValue="720"
                   className="input-field"
                 />
               </div>
